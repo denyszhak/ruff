@@ -1,11 +1,10 @@
 use std::fmt::{Display, Formatter};
 
 use ruff_macros::{ViolationMetadata, derive_message_formats};
-use ruff_python_ast::name::QualifiedName;
-use ruff_python_ast::{self as ast, Expr};
-use ruff_python_semantic::SemanticModel;
+use ruff_python_ast::{self as ast, Expr, name::QualifiedName};
 use ruff_python_semantic::analyze::typing;
-use ruff_text_size::{Ranged, TextRange};
+use ruff_python_semantic::SemanticModel;
+use ruff_text_size::Ranged;
 
 use crate::checkers::ast::Checker;
 use crate::fix::edits::add_argument;
@@ -15,7 +14,7 @@ use crate::{AlwaysFixableViolation, Fix};
 /// Checks for uses of `open` and related calls without an explicit `encoding`
 /// argument.
 ///
-/// ## Why is this bad?
+/// ## Why is this bad?:
 /// Using `open` in text mode without an explicit encoding can lead to
 /// non-portable code, with differing behavior across platforms. While readers
 /// may assume that UTF-8 is the default encoding, in reality, the default
@@ -182,26 +181,19 @@ impl Display for Callee<'_> {
 
 /// Generate an [`Edit`] to set `encoding="utf-8"`.
 fn generate_keyword_fix(checker: &Checker, call: &ast::ExprCall) -> Fix {
+    let preferred_quote = checker.stylist().quote().as_char();
+    let encoding = "utf-8";
     Fix::unsafe_edit(add_argument(
-        &format!(
-            "encoding={}",
-            checker.generator().expr(&Expr::from(ast::StringLiteral {
-                value: Box::from("utf-8"),
-                flags: checker.default_string_flags(),
-                range: TextRange::default(),
-                node_index: ruff_python_ast::AtomicNodeIndex::NONE,
-            }))
-        ),
+        &format!("encoding={preferred_quote}{encoding}{preferred_quote}"),
         &call.arguments,
-        checker.comment_ranges(),
-        checker.locator().contents(),
+        checker.tokens(),
     ))
 }
 
 /// Returns `true` if the given expression is a string literal containing a `b` character.
 fn is_binary_mode(expr: &Expr) -> Option<bool> {
     Some(
-        expr.as_string_literal_expr()?
+        expr.as_string_literal_expr()? 
             .value
             .chars()
             .any(|c| c == 'b'),
@@ -293,3 +285,4 @@ enum ModeArgument {
     /// The call does not support a `mode` argument.
     Unsupported,
 }
+

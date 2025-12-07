@@ -94,9 +94,7 @@ pub(crate) fn no_explicit_stacklevel(checker: &Checker, call: &ast::ExprCall) {
 
     let edit = add_argument(
         "stacklevel=2",
-        &call.arguments,
-        checker.comment_ranges(),
-        checker.locator().contents(),
+        &call.arguments, checker.tokens(),
     );
 
     diagnostic.set_fix(Fix::unsafe_edit(edit));

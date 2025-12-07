@@ -1,6 +1,6 @@
 use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_ast::comparable::ComparableExpr;
-use ruff_python_ast::parenthesize::parenthesized_range;
+use ruff_python_ast::token::parenthesized_range;
 use ruff_python_ast::{self as ast, CmpOp, Stmt};
 use ruff_text_size::Ranged;
 
@@ -166,12 +166,7 @@ pub(crate) fn if_stmt_min_max(checker: &Checker, stmt_if: &ast::StmtIf) {
     let replacement = format!(
         "{} = {min_max}({}, {})",
         checker.locator().slice(
-            parenthesized_range(
-                body_target.into(),
-                body.into(),
-                checker.comment_ranges(),
-                checker.locator().contents()
-            )
+            parenthesized_range(body_target.into(), body.into(), checker.tokens())
             .unwrap_or(body_target.range())
         ),
         checker.locator().slice(arg1),

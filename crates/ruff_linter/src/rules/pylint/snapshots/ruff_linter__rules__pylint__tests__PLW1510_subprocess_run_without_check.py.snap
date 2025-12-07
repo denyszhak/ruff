@@ -15,7 +15,7 @@ help: Add explicit `check=False`
 2 | 
 3 | # Errors.
   - subprocess.run("ls")
-4 + subprocess.run("ls", check=False)
+4 + subprocess.run("ls", check=True)
 5 | subprocess.run("ls", shell=True)
 6 | subprocess.run(
 7 |     ["ls"],
@@ -35,7 +35,7 @@ help: Add explicit `check=False`
 3 | # Errors.
 4 | subprocess.run("ls")
   - subprocess.run("ls", shell=True)
-5 + subprocess.run("ls", check=False, shell=True)
+5 + subprocess.run("ls", check=True, shell=True)
 6 | subprocess.run(
 7 |     ["ls"],
 8 |     shell=False,
@@ -55,7 +55,7 @@ help: Add explicit `check=False`
 6  | subprocess.run(
 7  |     ["ls"],
    -     shell=False,
-8  +     check=False, shell=False,
+8  +     check=True, shell=False,
 9  | )
 10 | subprocess.run(["ls"], **kwargs)
 11 | 
@@ -75,7 +75,7 @@ help: Add explicit `check=False`
 8  |     shell=False,
 9  | )
    - subprocess.run(["ls"], **kwargs)
-10 + subprocess.run(["ls"], check=False, **kwargs)
+10 + subprocess.run(["ls"], check=True, **kwargs)
 11 | 
 12 | # Non-errors.
 13 | subprocess.run("ls", check=True)

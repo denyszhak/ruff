@@ -98,8 +98,7 @@ pub(crate) fn duplicate_bases(checker: &Checker, name: &str, arguments: Option<&
                         base,
                         arguments,
                         Parentheses::Remove,
-                        checker.locator().contents(),
-                        checker.comment_ranges(),
+                        checker.tokens(),
                     )
                     .map(|edit| {
                         Fix::applicable_edit(

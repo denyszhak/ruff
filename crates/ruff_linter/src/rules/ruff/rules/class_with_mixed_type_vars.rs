@@ -158,12 +158,11 @@ fn convert_type_vars(
         source,
     };
 
-    let remove_generic_base = remove_argument(
+let remove_generic_base = remove_argument(
         generic_base,
         class_arguments,
         Parentheses::Remove,
-        source,
-        checker.comment_ranges(),
+        checker.tokens(),
     )?;
     let replace_type_params =
         Edit::range_replacement(new_type_params.to_string(), type_params.range);

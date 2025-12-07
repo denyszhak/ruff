@@ -2,7 +2,7 @@ use itertools::Itertools;
 use rustc_hash::{FxBuildHasher, FxHashSet};
 
 use ruff_macros::{ViolationMetadata, derive_message_formats};
-use ruff_python_ast::parenthesize::parenthesized_range;
+use ruff_python_ast::token::parenthesized_range;
 use ruff_python_ast::{self as ast, Expr};
 use ruff_python_stdlib::identifiers::is_identifier;
 use ruff_text_size::Ranged;
@@ -129,8 +129,7 @@ pub(crate) fn unnecessary_dict_kwargs(checker: &Checker, call: &ast::ExprCall) {
                     keyword,
                     &call.arguments,
                     Parentheses::Preserve,
-                    checker.locator().contents(),
-                    checker.comment_ranges(),
+                    checker.tokens(),
                 )
                 .map(Fix::safe_edit)
             });
@@ -155,12 +154,7 @@ pub(crate) fn unnecessary_dict_kwargs(checker: &Checker, call: &ast::ExprCall) {
                                     "{}={}",
                                     kwarg,
                                     checker.locator().slice(
-                                        parenthesized_range(
-                                            value.into(),
-                                            dict.into(),
-                                            checker.comment_ranges(),
-                                            checker.locator().contents(),
-                                        )
+                                        parenthesized_range(value.into(), dict.into(), checker.tokens())
                                         .unwrap_or(value.range())
                                     )
                                 )

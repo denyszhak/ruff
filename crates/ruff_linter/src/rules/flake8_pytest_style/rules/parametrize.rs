@@ -2,10 +2,9 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_ast::comparable::ComparableExpr;
-use ruff_python_ast::parenthesize::parenthesized_range;
+use ruff_python_ast::token::parenthesized_range;
 use ruff_python_ast::{self as ast, Expr, ExprCall, ExprContext, StringLiteralFlags};
 use ruff_python_codegen::Generator;
-use ruff_python_trivia::CommentRanges;
 use ruff_python_trivia::{SimpleTokenKind, SimpleTokenizer};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
@@ -325,15 +324,9 @@ fn elts_to_csv(elts: &[Expr], generator: Generator, flags: StringLiteralFlags) -
 fn get_parametrize_name_range(
     call: &ExprCall,
     expr: &Expr,
-    comment_ranges: &CommentRanges,
-    source: &str,
+    tokens: &ruff_python_ast::token::Tokens,
 ) -> Option<TextRange> {
-    parenthesized_range(
-        expr.into(),
-        (&call.arguments).into(),
-        comment_ranges,
-        source,
-    )
+    parenthesized_range(expr.into(), (&call.arguments).into(), tokens)
 }
 
 /// PT006
@@ -349,13 +342,8 @@ fn check_names(checker: &Checker, call: &ExprCall, expr: &Expr, argvalues: &Expr
             if names.len() > 1 {
                 match names_type {
                     types::ParametrizeNameType::Tuple => {
-                        let name_range = get_parametrize_name_range(
-                            call,
-                            expr,
-                            checker.comment_ranges(),
-                            checker.locator().contents(),
-                        )
-                        .unwrap_or(expr.range());
+                        let name_range = get_parametrize_name_range(call, expr, checker.tokens())
+                            .unwrap_or(expr.range());
                         let mut diagnostic = checker.report_diagnostic(
                             PytestParametrizeNamesWrongType {
                                 single_argument: false,
@@ -386,13 +374,8 @@ fn check_names(checker: &Checker, call: &ExprCall, expr: &Expr, argvalues: &Expr
                         )));
                     }
                     types::ParametrizeNameType::List => {
-                        let name_range = get_parametrize_name_range(
-                            call,
-                            expr,
-                            checker.comment_ranges(),
-                            checker.locator().contents(),
-                        )
-                        .unwrap_or(expr.range());
+                        let name_range = get_parametrize_name_range(call, expr, checker.tokens())
+                            .unwrap_or(expr.range());
                         let mut diagnostic = checker.report_diagnostic(
                             PytestParametrizeNamesWrongType {
                                 single_argument: false,

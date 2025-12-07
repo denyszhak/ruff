@@ -2,7 +2,7 @@ use anyhow::Context;
 
 use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_ast as ast;
-use ruff_python_ast::parenthesize::parenthesized_range;
+use ruff_python_ast::token::parenthesized_range;
 use ruff_python_semantic::{Scope, ScopeKind};
 use ruff_python_trivia::{indentation_at_offset, textwrap};
 use ruff_source_file::LineRanges;
@@ -156,12 +156,7 @@ fn use_initvar(
 
     let locator = checker.locator();
 
-    let default_loc = parenthesized_range(
-        default.into(),
-        parameter_with_default.into(),
-        checker.comment_ranges(),
-        checker.source(),
-    )
+    let default_loc = parenthesized_range(default.into(), parameter_with_default.into(), checker.tokens())
     .unwrap_or(default.range());
 
     // Delete the default value. For example,

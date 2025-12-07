@@ -318,9 +318,10 @@ help: Remove `object` inheritance
 96  | 
 97  | class B(
     -     object,
-98  |     # Comment on A.
-99  |     A,
-100 | ):
+    -     # Comment on A.
+98  |     A,
+99  | ):
+100 |     ...
 note: This is an unsafe fix and may change runtime behavior
 
 UP004 [*] Class `B` inherits from `object`
