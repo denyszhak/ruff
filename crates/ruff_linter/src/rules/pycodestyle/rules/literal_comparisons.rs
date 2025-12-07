@@ -378,9 +378,9 @@ pub(crate) fn literal_comparisons(checker: &Checker, compare: &ast::ExprCompare)
             .copied()
             .collect::<Vec<_>>();
 
+        let comment_ranges = checker.comment_ranges();
         let tokens = checker.tokens();
         let source = checker.source();
-        let comment_ranges = checker.comment_ranges();
 
         let content = match (&*compare.ops, &*compare.comparators) {
             ([op], [comparator]) => {
