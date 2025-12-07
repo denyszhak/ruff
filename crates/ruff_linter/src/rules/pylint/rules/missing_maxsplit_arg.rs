@@ -175,13 +175,9 @@ pub(crate) fn missing_maxsplit_arg(checker: &Checker, value: &Expr, slice: &Expr
     };
 
     let maxsplit_argument_edit = fix::edits::add_argument(
-
             "maxsplit=1",
-
             arguments,
-
             checker.tokens(),
-
         );
 
     // Only change `actual_split_type` if it doesn't match `suggested_split_type`

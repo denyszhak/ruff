@@ -76,7 +76,7 @@ pub(crate) fn subprocess_run_without_check(checker: &Checker, call: &ast::ExprCa
                 checker.report_diagnostic(SubprocessRunWithoutCheck, call.func.range());
             diagnostic.set_fix(Fix::applicable_edit(
 add_argument(
-                    "check=True",
+                    "check=False",
                     &call.arguments,
                     checker.tokens(),
                 ),

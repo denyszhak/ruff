@@ -3,12 +3,12 @@
 use anyhow::{Context, Result};
 
 use ruff_python_ast::AnyNodeRef;
-use ruff_python_ast::token::{self, parenthesized_range, TokenKind};
+use ruff_python_ast::token::{self, TokenKind, parenthesized_range};
 use ruff_python_ast::{self as ast, Arguments, ExceptHandler, Expr, ExprList, Parameters, Stmt};
 use ruff_python_codegen::Stylist;
 use ruff_python_index::Indexer;
 use ruff_python_trivia::textwrap::dedent_to;
-use ruff_python_trivia::{is_python_whitespace, has_leading_content, PythonWhitespace};
+use ruff_python_trivia::{PythonWhitespace, has_leading_content, is_python_whitespace};
 use ruff_source_file::{LineRanges, NewlineWithTrailingNewline, UniversalNewlines};
 use ruff_text_size::{Ranged, TextLen, TextRange, TextSize};
 
@@ -220,7 +220,8 @@ pub(crate) fn remove_argument<T: Ranged>(
         .context("Unable to find argument")?;
 
     let parenthesized_range =
-        token::parenthesized_range(arg.value().into(), arguments.into(), tokens).unwrap_or_else(|| arg.range());
+        token::parenthesized_range(arg.value().into(), arguments.into(), tokens)
+            .unwrap_or_else(|| arg.range());
 
     if !after.is_empty() {
         // Case 1: argument or keyword is _not_ the last node, so delete from the start of the
@@ -234,7 +235,12 @@ pub(crate) fn remove_argument<T: Ranged>(
 
         // Find the next non-whitespace token.
         let next = tokens_after
-            .find(|token| !token.kind().is_trivia())
+            .find(|token| {
+                !matches!(
+                    token.kind(),
+                    TokenKind::Newline | TokenKind::NonLogicalNewline
+                )
+            })
             .context("Unable to find next token")?;
 
         Ok(Edit::deletion(parenthesized_range.start(), next.start()))
@@ -283,7 +289,11 @@ pub(crate) fn add_argument(
 }
 
 /// Generic function to add a (regular) parameter to a function definition.
-pub(crate) fn add_parameter(parameter: &str, parameters: &Parameters, tokens: &ruff_python_ast::token::Tokens) -> Edit {
+pub(crate) fn add_parameter(
+    parameter: &str,
+    parameters: &Parameters,
+    tokens: &ruff_python_ast::token::Tokens,
+) -> Edit {
     if let Some(last) = parameters
         .args
         .iter()
@@ -295,7 +305,9 @@ pub(crate) fn add_parameter(parameter: &str, parameters: &Parameters, tokens: &r
     } else if !parameters.args.is_empty() {
         // Case 2: no regular parameters, but at least one keyword parameter, so add before the
         // first.
-        let name = tokens.after(parameters.start()).iter()
+        let name = tokens
+            .after(parameters.start())
+            .iter()
             .find(|token| token.kind() == TokenKind::Name)
             .expect("Unable to find name token");
         Edit::insertion(format!("{parameter}, "), name.start())
@@ -317,7 +329,9 @@ pub(crate) fn add_parameter(parameter: &str, parameters: &Parameters, tokens: &r
         // Case 3: no regular parameter, but a keyword-only parameter exist, so add parameter before that.
         // We need to backtrack to before the `*` separator.
         // We know there is no non-keyword-only params, so we can safely assume that the `*` separator is the first
-        let star = tokens.after(parameters.start()).iter()
+        let star = tokens
+            .after(parameters.start())
+            .iter()
             .find(|token| token.kind() == TokenKind::Star)
             .expect("Unable to find `*` token");
         Edit::insertion(format!("{parameter}, "), star.start())
