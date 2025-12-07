@@ -1,6 +1,6 @@
 use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_ast::helpers::is_const_true;
-use ruff_python_ast::token::parenthesized_range;
+use ruff_python_ast::token::{parenthesized_range, Tokens};
 use ruff_python_ast::{self as ast, Keyword, Stmt};
 use ruff_text_size::Ranged;
 
@@ -110,7 +110,7 @@ fn convert_inplace_argument_to_assignment(
     call: &ast::ExprCall,
     keyword: &Keyword,
     statement: &Stmt,
-    tokens: &ruff_python_ast::token::Tokens,
+    tokens: &Tokens,
     locator: &Locator,
 ) -> Option<Fix> {
     // Add the assignment.

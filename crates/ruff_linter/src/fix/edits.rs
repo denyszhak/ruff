@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 
 use ruff_python_ast::AnyNodeRef;
-use ruff_python_ast::token::{self, TokenKind, parenthesized_range};
+use ruff_python_ast::token::{self, TokenKind, parenthesized_range, Tokens};
 use ruff_python_ast::{self as ast, Arguments, ExceptHandler, Expr, ExprList, Parameters, Stmt};
 use ruff_python_codegen::Stylist;
 use ruff_python_index::Indexer;
@@ -205,7 +205,7 @@ pub(crate) fn remove_argument<T: Ranged>(
     argument: &T,
     arguments: &Arguments,
     parentheses: Parentheses,
-    tokens: &ruff_python_ast::token::Tokens,
+    tokens: &Tokens,
 ) -> Result<Edit> {
     // Partition into arguments before and after the argument to remove.
     let (before, after): (Vec<_>, Vec<_>) = arguments
@@ -272,7 +272,7 @@ pub(crate) fn remove_argument<T: Ranged>(
 pub(crate) fn add_argument(
     argument: &str,
     arguments: &Arguments,
-    tokens: &ruff_python_ast::token::Tokens,
+    tokens: &Tokens,
 ) -> Edit {
     if let Some(ast::Keyword { range, value, .. }) = arguments.keywords.first() {
         let keyword = parenthesized_range(value.into(), arguments.into(), tokens).unwrap_or(*range);
@@ -292,7 +292,7 @@ pub(crate) fn add_argument(
 pub(crate) fn add_parameter(
     parameter: &str,
     parameters: &Parameters,
-    tokens: &ruff_python_ast::token::Tokens,
+    tokens: &Tokens,
 ) -> Edit {
     if let Some(last) = parameters
         .args

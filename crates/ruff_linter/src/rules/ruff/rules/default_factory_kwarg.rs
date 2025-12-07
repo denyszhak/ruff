@@ -4,6 +4,7 @@ use ast::Keyword;
 use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_ast::helpers::is_constant;
 use ruff_python_ast::{self as ast, Expr};
+use ruff_python_ast::token::Tokens;
 use ruff_text_size::Ranged;
 
 use crate::Locator;
@@ -134,7 +135,7 @@ fn convert_to_positional(
     call: &ast::ExprCall,
     default_factory: &Keyword,
     locator: &Locator,
-    tokens: &ruff_python_ast::token::Tokens,
+    tokens: &Tokens,
 ) -> Result<Fix> {
     if call.arguments.len() == 1 {
         // Ex) `defaultdict(default_factory=list)`

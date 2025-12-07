@@ -1,4 +1,4 @@
-use ruff_python_ast::token::parenthesized_range;
+use ruff_python_ast::token::{parenthesized_range, Tokens};
 use rustc_hash::FxHashMap;
 
 use ruff_macros::{ViolationMetadata, derive_message_formats};
@@ -179,7 +179,7 @@ fn is_redundant_boolean_comparison(op: CmpOp, comparator: &Expr) -> Option<bool>
 
 fn generate_redundant_comparison(
     compare: &ast::ExprCompare,
-    tokens: &ruff_python_ast::token::Tokens,
+    tokens: &Tokens,
     source: &str,
     comparator: &Expr,
     kind: bool,

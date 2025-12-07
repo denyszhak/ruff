@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use ruff_macros::{ViolationMetadata, derive_message_formats};
-use ruff_python_ast::{self as ast, Keyword};
+use ruff_python_ast::{self as ast, Keyword, token::Tokens};
 use ruff_python_semantic::Modules;
 use ruff_text_size::Ranged;
 
@@ -114,7 +114,7 @@ fn generate_fix(
     stdout: &Keyword,
     stderr: &Keyword,
     call: &ast::ExprCall,
-    tokens: &ruff_python_ast::token::Tokens,
+    tokens: &Tokens,
 ) -> Result<Fix> {
     let (first, second) = if stdout.start() < stderr.start() {
         (stdout, stderr)

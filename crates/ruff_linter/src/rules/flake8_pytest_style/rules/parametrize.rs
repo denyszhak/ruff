@@ -2,7 +2,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_ast::comparable::ComparableExpr;
-use ruff_python_ast::token::parenthesized_range;
+use ruff_python_ast::token::{parenthesized_range, Tokens};
 use ruff_python_ast::{self as ast, Expr, ExprCall, ExprContext, StringLiteralFlags};
 use ruff_python_codegen::Generator;
 use ruff_python_trivia::{SimpleTokenKind, SimpleTokenizer};
@@ -324,7 +324,7 @@ fn elts_to_csv(elts: &[Expr], generator: Generator, flags: StringLiteralFlags) -
 fn get_parametrize_name_range(
     call: &ExprCall,
     expr: &Expr,
-    tokens: &ruff_python_ast::token::Tokens,
+    tokens: &Tokens,
 ) -> Option<TextRange> {
     parenthesized_range(expr.into(), (&call.arguments).into(), tokens)
 }

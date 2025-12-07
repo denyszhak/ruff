@@ -1,5 +1,5 @@
 use ruff_macros::{ViolationMetadata, derive_message_formats};
-use ruff_python_ast::token::parenthesized_range;
+use ruff_python_ast::token::{parenthesized_range, Tokens};
 use ruff_python_ast::{Arguments, Expr, ExprCall};
 use ruff_python_semantic::SemanticModel;
 use ruff_python_semantic::analyze::type_inference::{NumberLike, PythonType, ResolvedPythonType};
@@ -102,7 +102,7 @@ fn unwrap_int_expression(
     applicability: Applicability,
     semantic: &SemanticModel,
     locator: &Locator,
-    tokens: &ruff_python_ast::token::Tokens,
+    tokens: &Tokens,
     comment_ranges: &CommentRanges,
     source: &str,
 ) -> Fix {
@@ -254,7 +254,7 @@ fn round_applicability(arguments: &Arguments, semantic: &SemanticModel) -> Optio
 }
 
 /// Returns `true` if the given [`Expr`] has its own parentheses (e.g., `()`, `[]`, `{}`).
-fn has_own_parentheses(expr: &Expr, tokens: &ruff_python_ast::token::Tokens, source: &str) -> bool {
+fn has_own_parentheses(expr: &Expr, tokens: &Tokens, source: &str) -> bool {
     match expr {
         Expr::ListComp(_)
         | Expr::SetComp(_)

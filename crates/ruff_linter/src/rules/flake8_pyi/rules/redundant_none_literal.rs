@@ -5,7 +5,7 @@ use ruff_python_ast::{
     helpers::{pep_604_union, typing_optional},
     name::Name,
     operator_precedence::OperatorPrecedence,
-    token::parenthesized_range,
+    token::{parenthesized_range, Tokens},
 };
 use ruff_python_semantic::analyze::typing::{traverse_literal, traverse_union};
 use ruff_text_size::{Ranged, TextRange};
@@ -274,7 +274,7 @@ enum UnionKind {
 fn needs_parentheses_for_precedence(
     semantic: &ruff_python_semantic::SemanticModel,
     literal_expr: &Expr,
-    tokens: &ruff_python_ast::token::Tokens,
+    tokens: &Tokens,
 ) -> bool {
     // Get the parent expression to check if we're in a context that needs parentheses
     let Some(parent_expr) = semantic.current_expression_parent() else {
