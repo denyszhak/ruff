@@ -437,9 +437,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Returns the [`Tokens`] for the parsed source code, ignoring typing-context overrides.
-    pub(crate) fn file_tokens(&self) -> &'a Tokens {
-        self.parsed.tokens()
-    }
+
 
     /// The [`Locator`] for the current file, which enables extraction of source code from byte
     /// offsets.

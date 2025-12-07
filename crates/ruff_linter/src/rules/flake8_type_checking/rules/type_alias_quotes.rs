@@ -1,17 +1,17 @@
 use ast::{ExprContext, Operator};
 use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_ast as ast;
-use ruff_python_ast::{Expr, ExprRef, Stmt};
+use ruff_python_ast::{Expr, Stmt};
 use ruff_python_semantic::{Binding, SemanticModel, TypingOnlyBindingsStatus};
 use ruff_python_stdlib::typing::{is_pep_593_generic_type, is_standard_library_literal};
-use ruff_text_size::{Ranged, TextRange};
+use ruff_text_size::Ranged;
 
 use crate::checkers::ast::Checker;
 use crate::registry::Rule;
 use crate::rules::flake8_type_checking::helpers::quote_type_expression;
 use crate::{AlwaysFixableViolation, Edit, Fix, FixAvailability, Violation};
 use ruff_python_ast::PythonVersion;
-use ruff_python_ast::token::{TokenKind, Tokens, parenthesized_range};
+use ruff_python_ast::token::{Tokens, parenthesized_range};
 
 /// ## What it does
 /// Checks if [PEP 613] explicit type aliases contain references to
@@ -295,11 +295,22 @@ pub(crate) fn quoted_type_alias(
     let range = annotation_expr.range();
     let mut diagnostic = checker.report_diagnostic(QuotedTypeAlias, range);
     let fix_string = annotation_expr.value.to_string();
-    let outer_parens = surrounding_parentheses(annotation_expr.into(), checker.file_tokens());
-    let inner_parens = parenthesized_range(expr.into(), annotation_expr.into(), checker.tokens());
+
     let fix_string = if (fix_string.contains('\n') || fix_string.contains('\r'))
-        && outer_parens.is_none()
-        && inner_parens.is_none()
+        && parenthesized_range(
+            // Check for parentheses outside the string ("""...""")
+            annotation_expr.into(),
+            checker.semantic().current_statement().into(),
+            checker.tokens(),
+        )
+        .is_none()
+        && parenthesized_range(
+            // Check for parentheses inside the string """(...)"""
+            expr.into(),
+            annotation_expr.into(),
+            checker.tokens(),
+        )
+        .is_none()
     {
         format!("({fix_string})")
     } else {
@@ -390,33 +401,4 @@ fn quotes_are_unremovable(
         }
         _ => false,
     }
-}
-
-fn surrounding_parentheses(expr: ExprRef<'_>, tokens: &Tokens) -> Option<TextRange> {
-    let right = tokens
-        .after(expr.end())
-        .iter()
-        .find(|token| !is_ignorable_token(token.kind()))?;
-    if right.kind() != TokenKind::Rpar {
-        return None;
-    }
-
-    let left = tokens
-        .before(expr.start())
-        .iter()
-        .rev()
-        .find(|token| !is_ignorable_token(token.kind()))?;
-    if left.kind() != TokenKind::Lpar {
-        return None;
-    }
-
-    Some(TextRange::new(left.start(), right.end()))
-}
-
-fn is_ignorable_token(kind: TokenKind) -> bool {
-    kind.is_trivia()
-        || matches!(
-            kind,
-            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
-        )
 }
