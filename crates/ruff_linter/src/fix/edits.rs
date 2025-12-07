@@ -221,7 +221,7 @@ pub(crate) fn remove_argument<T: Ranged>(
 
     let parenthesized_range =
         token::parenthesized_range(arg.value().into(), arguments.into(), tokens)
-            .unwrap_or_else(|| arg.range());
+            .unwrap_or(arg.range());
 
     if !after.is_empty() {
         // Case 1: argument or keyword is _not_ the last node, so delete from the start of the
