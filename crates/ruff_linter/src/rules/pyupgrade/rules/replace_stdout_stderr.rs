@@ -117,11 +117,6 @@ fn generate_fix(
     // Replace one argument with `capture_output=True`, and remove the other.
     Ok(Fix::unsafe_edits(
         Edit::range_replacement("capture_output=True".to_string(), first.range()),
-        [remove_argument(
-            second,
-            &call.arguments,
-            Parentheses::Preserve,
-            tokens,
-        )?],
+        [remove_argument(stderr, call.arguments.as_ref(), Parentheses::Preserve, checker.source(), checker.tokens())?],
     ))
 }

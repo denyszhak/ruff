@@ -94,7 +94,7 @@ pub(crate) fn duplicate_bases(checker: &Checker, name: &str, arguments: Option<&
                     base.range(),
                 );
                 diagnostic.try_set_fix(|| {
-                    remove_argument(base, arguments, Parentheses::Remove, checker.tokens()).map(
+                    remove_argument(base, arguments, Parentheses::Remove, checker.source(), checker.tokens()).map(
                         |edit| {
                             Fix::applicable_edit(
                                 edit,

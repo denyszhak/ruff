@@ -161,7 +161,7 @@ fn generate_fix(
     let locator = checker.locator();
     let tokens = checker.tokens();
 
-    let deletion = remove_argument(generic_base, arguments, Parentheses::Preserve, tokens)?;
+    let deletion = remove_argument(generic_base, arguments, Parentheses::Preserve, locator.contents(), tokens)?;
     let insertion = add_argument(locator.slice(generic_base), arguments, tokens);
 
     Ok(Fix::unsafe_edits(deletion, [insertion]))
