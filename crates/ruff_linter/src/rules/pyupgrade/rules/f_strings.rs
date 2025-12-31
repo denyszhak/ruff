@@ -273,7 +273,7 @@ impl FStringConversion {
         }
 
         // Parse the format string, passing raw flag to handle \N{...} correctly
-        let format_string = FormatString::from_str_raw(contents, raw)?;
+        let format_string = FormatString::parse(contents, raw)?;
 
         // If the format string contains only literal parts, it doesn't need to be converted.
         if format_string

@@ -700,7 +700,7 @@ impl FormatString {
         })
     }
 
-    pub fn from_str_raw(text: &str, is_raw: bool) -> Result<Self, FormatParseError> {
+    pub fn parse(text: &str, is_raw: bool) -> Result<Self, FormatParseError> {
         let mut cur_text: &str = text;
         let mut parts: Vec<FormatPart> = Vec::new();
         while !cur_text.is_empty() {
@@ -726,7 +726,7 @@ impl<'a> FromTemplate<'a> for FormatString {
     type Err = FormatParseError;
 
     fn from_str(text: &'a str) -> Result<Self, Self::Err> {
-        FormatString::from_str_raw(text, false)
+        FormatString::parse(text, false)
     }
 }
 
