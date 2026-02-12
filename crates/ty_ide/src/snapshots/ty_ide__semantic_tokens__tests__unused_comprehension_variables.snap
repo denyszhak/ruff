@@ -1,0 +1,25 @@
+---
+source: crates/ty_ide/src/semantic_tokens.rs
+expression: test.to_snapshot(&tokens)
+---
+"1" @ 2..3: Number
+"x" @ 8..9: Variable [definition, unnecessary]
+"range" @ 13..18: Class
+"10" @ 19..21: Number
+"x" @ 25..26: Variable
+"x" @ 31..32: Variable [definition]
+"y" @ 34..35: Variable [definition, unnecessary]
+"1" @ 41..42: Number
+"2" @ 44..45: Number
+"k" @ 50..51: Variable
+"0" @ 53..54: Number
+"k" @ 59..60: Variable [definition]
+"v" @ 62..63: Variable [definition, unnecessary]
+"items" @ 70..75: Method
+"0" @ 80..81: Number
+"a" @ 86..87: Variable [definition, unnecessary]
+"range" @ 91..96: Class
+"3" @ 97..98: Number
+"b" @ 104..105: Variable [definition, unnecessary]
+"range" @ 109..114: Class
+"3" @ 115..116: Number

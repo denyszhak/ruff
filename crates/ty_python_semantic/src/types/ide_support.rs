@@ -19,8 +19,52 @@ use ruff_python_ast::{self as ast, AnyNodeRef};
 use ruff_text_size::{Ranged, TextRange};
 use rustc_hash::FxHashSet;
 
+use crate::semantic_index::scope::ScopeKind;
 pub use resolve_definition::{ImportAliasResolution, ResolvedDefinition, map_stub_definition};
 use resolve_definition::{find_symbol_in_scope, resolve_definition};
+
+fn is_dunder_name(name: &str) -> bool {
+    name.len() > 4 && name.starts_with("__") && name.ends_with("__")
+}
+
+fn should_mark_unnecessary(scope_kind: ScopeKind, name: &str) -> bool {
+    if name == "_" || is_dunder_name(name) {
+        return false;
+    }
+
+    match scope_kind {
+        ScopeKind::Function | ScopeKind::Lambda | ScopeKind::Comprehension => true,
+        ScopeKind::Module | ScopeKind::Class | ScopeKind::TypeParams | ScopeKind::TypeAlias => {
+            false
+        }
+    }
+}
+
+/// Check whether a symbol is unused within its containing scope and should be marked as unnecessary.
+/// Returns `Some(true)` if unused and should be marked, `Some(false)` otherwise, or `None` if the symbol cannot be found.
+pub fn is_symbol_unnecessary_in_scope(
+    model: &SemanticModel<'_>,
+    scope_node: ast::AnyNodeRef<'_>,
+    name: &str,
+) -> Option<bool> {
+    let file = model.file();
+    let file_scope = model.scope(scope_node)?;
+    let index = crate::semantic_index::semantic_index(model.db(), file);
+    let scope = index.scope(file_scope);
+    if !should_mark_unnecessary(scope.kind(), name) {
+        return Some(false);
+    }
+    let place_table = index.place_table(file_scope);
+    let symbol_id = place_table.symbol_id(name)?;
+    let symbol = place_table.symbol(symbol_id);
+    Some(!symbol.is_used())
+}
+
+/// Check whether a name expression refers to a symbol that is unused and should be marked as unnecessary.
+/// Returns `Some(true)` if unused and should be marked, `Some(false)` otherwise, or `None` if the symbol cannot be found.
+pub fn is_name_symbol_unnecessary(model: &SemanticModel<'_>, name: &ast::ExprName) -> Option<bool> {
+    is_symbol_unnecessary_in_scope(model, ast::AnyNodeRef::from(name), name.id.as_str())
+}
 
 /// Get the primary definition kind for a name expression within a specific file.
 /// Returns the first definition kind that is reachable for this name in its scope.
