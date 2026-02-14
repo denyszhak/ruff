@@ -130,7 +130,6 @@ bitflags! {
         const READONLY = 1 << 1;
         const ASYNC = 1 << 2;
         const DOCUMENTATION = 1 << 3;
-        const UNNECESSARY = 1 << 4;
     }
 }
 
@@ -143,13 +142,7 @@ impl SemanticTokenModifier {
     /// highlighting. For details, refer to this LSP specification:
     /// <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#semanticTokenModifiers>
     pub fn all_names() -> Vec<&'static str> {
-        vec![
-            "definition",
-            "readonly",
-            "async",
-            "documentation",
-            "unnecessary",
-        ]
+        vec!["definition", "readonly", "async", "documentation"]
     }
 }
 
@@ -820,20 +813,10 @@ impl SourceOrderVisitor<'_> for SemanticTokenVisitor<'_> {
                                 self.visit_expr(expr);
                             }
                             if let Some(name) = &except_handler.name {
-                                let mut modifiers = SemanticTokenModifier::DEFINITION;
-                                if let Some(true) =
-                                    ty_python_semantic::types::ide_support::is_symbol_unnecessary_in_scope(
-                                        self.model,
-                                        ast::AnyNodeRef::from(except_handler),
-                                        name.id.as_str(),
-                                    )
-                                {
-                                    modifiers |= SemanticTokenModifier::UNNECESSARY;
-                                }
                                 self.add_token(
                                     name.range(),
                                     SemanticTokenType::Variable,
-                                    modifiers,
+                                    SemanticTokenModifier::DEFINITION,
                                 );
                             }
                             self.visit_body(&except_handler.body);
@@ -870,13 +853,6 @@ impl SourceOrderVisitor<'_> for SemanticTokenVisitor<'_> {
                 let (token_type, mut modifiers) = self.classify_name(name);
                 if self.in_target_creating_definition && name.ctx.is_store() {
                     modifiers |= SemanticTokenModifier::DEFINITION;
-                    if let Some(true) =
-                        ty_python_semantic::types::ide_support::is_name_symbol_unnecessary(
-                            self.model, name,
-                        )
-                    {
-                        modifiers |= SemanticTokenModifier::UNNECESSARY;
-                    }
                 }
                 self.add_token(name, token_type, modifiers);
                 walk_expr(self, expr);
@@ -1063,17 +1039,11 @@ impl SourceOrderVisitor<'_> for SemanticTokenVisitor<'_> {
 
     fn visit_pattern(&mut self, pattern: &ast::Pattern) {
         let add_pattern_binding = |this: &mut Self, name: &ast::Identifier| {
-            let mut modifiers = SemanticTokenModifier::DEFINITION;
-            if let Some(true) =
-                ty_python_semantic::types::ide_support::is_symbol_unnecessary_in_scope(
-                    this.model,
-                    ast::AnyNodeRef::from(name),
-                    name.id.as_str(),
-                )
-            {
-                modifiers |= SemanticTokenModifier::UNNECESSARY;
-            }
-            this.add_token(name.range(), SemanticTokenType::Variable, modifiers);
+            this.add_token(
+                name.range(),
+                SemanticTokenType::Variable,
+                SemanticTokenModifier::DEFINITION,
+            );
         };
 
         match pattern {
@@ -1974,7 +1944,7 @@ def my_function(param1: int, param2: str) -> bool:
         "str" @ 38..41: Class
         "bool" @ 46..50: Class
         "\"\"\"Example function\n\n    Args:\n        param1: The first parameter.\n        param2: The second parameter.\n\n    Returns:\n        The return value. True for success, False otherwise.\n\n    \"\"\"" @ 56..245: String [documentation]
-        "x" @ 251..252: Variable [definition, unnecessary]
+        "x" @ 251..252: Variable [definition]
         "\"hello\"" @ 255..262: String
         "other_func" @ 271..281: Function [definition]
         "\"\"\"unrelated string\"\"\"" @ 295..317: String
@@ -2463,13 +2433,13 @@ def test_function(param: int, other: MyClass) -> Optional[List[str]]:
         "Optional" @ 110..118: Variable
         "List" @ 119..123: Variable
         "str" @ 124..127: Class
-        "x" @ 190..191: Variable [definition, unnecessary]
+        "x" @ 190..191: Variable [definition]
         "int" @ 193..196: Class
         "42" @ 199..201: Number
-        "y" @ 206..207: Variable [definition, unnecessary]
+        "y" @ 206..207: Variable [definition]
         "MyClass" @ 209..216: Class
         "MyClass" @ 219..226: Class
-        "z" @ 233..234: Variable [definition, unnecessary]
+        "z" @ 233..234: Variable [definition]
         "List" @ 236..240: Variable
         "str" @ 241..244: Class
         "\"hello\"" @ 249..256: String
@@ -2741,7 +2711,7 @@ def generic_function[T](value: T) -> T:
         "result" @ 98..104: Variable [definition]
         "T" @ 106..107: TypeParameter
         "value" @ 110..115: Parameter
-        "temp" @ 120..124: Variable [definition, unnecessary]
+        "temp" @ 120..124: Variable [definition]
         "result" @ 127..133: Variable
         "result" @ 184..190: Variable
         "#);
@@ -3037,19 +3007,19 @@ def outer():
         "y" @ 20..21: Variable [definition]
         "\"another_global\"" @ 24..40: String
         "outer" @ 46..51: Function [definition]
-        "x" @ 59..60: Variable [definition, unnecessary]
+        "x" @ 59..60: Variable [definition]
         "\"outer_value\"" @ 63..76: String
-        "z" @ 81..82: Variable [definition, unnecessary]
+        "z" @ 81..82: Variable [definition]
         "\"outer_local\"" @ 85..98: String
         "inner" @ 108..113: Function [definition]
         "x" @ 134..135: Variable
         "z" @ 137..138: Variable
         "y" @ 189..190: Variable
-        "x" @ 239..240: Variable [definition, unnecessary]
+        "x" @ 239..240: Variable [definition]
         "\"modified\"" @ 243..253: String
-        "y" @ 262..263: Variable [definition, unnecessary]
+        "y" @ 262..263: Variable [definition]
         "\"modified_global\"" @ 266..283: String
-        "z" @ 292..293: Variable [definition, unnecessary]
+        "z" @ 292..293: Variable [definition]
         "\"modified_local\"" @ 296..312: String
         "deeper" @ 326..332: Function [definition]
         "x" @ 357..358: Variable
@@ -3149,47 +3119,13 @@ def process_data(data):
         ", remaining: " @ 268..281: String
         "remaining" @ 282..291: Variable
         "sequence" @ 314..322: Variable
-        "value" @ 336..341: Variable [definition, unnecessary]
+        "value" @ 336..341: Variable [definition]
         "fallback" @ 345..353: Variable [definition]
         "print" @ 367..372: Function
         "Fallback: " @ 375..385: String
         "fallback" @ 386..394: Variable
         "fallback" @ 417..425: Variable
         "#);
-    }
-
-    #[test]
-    fn unused_pattern_bindings() {
-        let test = SemanticTokenTest::new(
-            r#"
-def func(data):
-    match data:
-        case {"x": x, **rest}:
-            return 1
-        case [first, *tail] as seq:
-            return first
-        case value as fallback:
-            return fallback
-"#,
-        );
-
-        let tokens = test.highlight_file();
-        let source = ruff_db::source::source_text(&test.db, test.file);
-        let has_definition = |name: &str, unnecessary: bool| {
-            tokens.iter().any(|token| {
-                token.modifiers.contains(SemanticTokenModifier::DEFINITION)
-                    && token.modifiers.contains(SemanticTokenModifier::UNNECESSARY) == unnecessary
-                    && &source[token.range()] == name
-            })
-        };
-
-        assert!(has_definition("x", true));
-        assert!(has_definition("rest", true));
-        assert!(has_definition("first", false));
-        assert!(has_definition("tail", true));
-        assert!(has_definition("seq", true));
-        assert!(has_definition("value", true));
-        assert!(has_definition("fallback", false));
     }
 
     #[test]
@@ -3390,98 +3326,6 @@ generator = (x for x in range(10))
         "#);
     }
 
-    #[test]
-    fn unused_comprehension_variables() {
-        let test = SemanticTokenTest::new(
-            r#"
-[1 for x in range(10)]
-[x for x, y in [(1, 2)]]
-{k: 0 for k, v in {}.items()}
-[0 for a in range(3) for b in range(3)]
-"#,
-        );
-
-        let tokens = test.highlight_file();
-        assert_snapshot!(test.to_snapshot(&tokens));
-    }
-
-    #[test]
-    fn unused_binding_targets() {
-        let test = SemanticTokenTest::new(
-            r#"
-x = 1
-print(x)
-_y = 2
-__all__ = ["x"]
-_ = 3
-
-class C:
-    z = 1
-    _w = 2
-    __p = 3
-
-def func():
-    y = 2
-    _t = 3
-    _ = 4
-    for i in range(3):
-        pass
-    for j in range(3):
-        print(j)
-    with open("f") as f:
-        pass
-    with open("f") as g:
-        print(g)
-    try:
-        1 / 0
-    except Exception as e:
-        pass
-    except Exception as ok:
-        print(ok)
-    if (m := 1):
-        pass
-    if (n := 1):
-        print(n)
-"#,
-        );
-
-        let tokens = test.highlight_file();
-        let source = ruff_db::source::source_text(&test.db, test.file);
-        let has_definition = |name: &str, unnecessary: bool| {
-            tokens.iter().any(|token| {
-                token.modifiers.contains(SemanticTokenModifier::DEFINITION)
-                    && token.modifiers.contains(SemanticTokenModifier::UNNECESSARY) == unnecessary
-                    && &source[token.range()] == name
-            })
-        };
-        let has_any_definition = |name: &str| {
-            tokens.iter().any(|token| {
-                token.modifiers.contains(SemanticTokenModifier::DEFINITION)
-                    && &source[token.range()] == name
-            })
-        };
-
-        assert!(has_definition("x", false));
-        assert!(has_definition("_y", false));
-        assert!(has_definition("__all__", false));
-        assert!(has_definition("_", false));
-        assert!(!has_definition("_", true));
-        assert!(has_definition("z", false));
-        assert!(has_definition("_w", false));
-        assert!(has_definition("__p", false));
-        assert!(has_definition("y", true));
-        assert!(has_definition("_t", true));
-        assert!(has_any_definition("_"));
-        assert!(has_definition("i", true));
-        assert!(has_definition("j", false));
-        assert!(has_definition("f", true));
-        assert!(has_definition("g", false));
-        assert!(has_definition("e", true));
-        assert!(has_definition("ok", false));
-        assert!(has_definition("m", true));
-        assert!(has_definition("n", false));
-    }
-
     /// Regression test for <https://github.com/astral-sh/ty/issues/1406>
     #[test]
     fn invalid_kwargs() {
@@ -3604,9 +3448,6 @@ from collections.abc import Set as AbstractSet
                         .contains(SemanticTokenModifier::DOCUMENTATION)
                     {
                         mods.push("documentation");
-                    }
-                    if token.modifiers.contains(SemanticTokenModifier::UNNECESSARY) {
-                        mods.push("unnecessary");
                     }
                     format!(" [{}]", mods.join(", "))
                 };

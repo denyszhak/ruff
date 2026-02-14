@@ -15,6 +15,9 @@ use crate::{Db, DisplaySettings, HasType, SemanticModel};
 use itertools::Either;
 use ruff_db::files::FileRange;
 use ruff_db::parsed::parsed_module;
+use ruff_python_ast::visitor::source_order::{
+    SourceOrderVisitor, walk_expr, walk_pattern, walk_stmt,
+};
 use ruff_python_ast::{self as ast, AnyNodeRef};
 use ruff_text_size::{Ranged, TextRange};
 use rustc_hash::FxHashSet;
@@ -64,6 +67,192 @@ pub fn is_symbol_unnecessary_in_scope(
 /// Returns `Some(true)` if unused and should be marked, `Some(false)` otherwise, or `None` if the symbol cannot be found.
 pub fn is_name_symbol_unnecessary(model: &SemanticModel<'_>, name: &ast::ExprName) -> Option<bool> {
     is_symbol_unnecessary_in_scope(model, ast::AnyNodeRef::from(name), name.id.as_str())
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct UnusedBinding {
+    pub range: TextRange,
+}
+
+pub fn unused_bindings(db: &dyn Db, file: ruff_db::files::File) -> Vec<UnusedBinding> {
+    let parsed = parsed_module(db, file).load(db);
+    let model = SemanticModel::new(db, file);
+
+    let mut collector = UnusedBindingCollector::new(&model);
+    collector.visit_body(parsed.suite());
+    collector
+        .unused_bindings
+        .sort_unstable_by_key(|binding| binding.range.start());
+    collector
+        .unused_bindings
+        .dedup_by_key(|binding| (binding.range.start(), binding.range.end()));
+
+    collector.unused_bindings
+}
+
+struct UnusedBindingCollector<'db> {
+    model: &'db SemanticModel<'db>,
+    unused_bindings: Vec<UnusedBinding>,
+    in_target_creating_definition: bool,
+}
+
+impl<'db> UnusedBindingCollector<'db> {
+    fn new(model: &'db SemanticModel<'db>) -> Self {
+        Self {
+            model,
+            unused_bindings: Vec::new(),
+            in_target_creating_definition: false,
+        }
+    }
+
+    fn add_unused_binding(&mut self, range: TextRange) {
+        self.unused_bindings.push(UnusedBinding { range });
+    }
+}
+
+impl SourceOrderVisitor<'_> for UnusedBindingCollector<'_> {
+    fn visit_stmt(&mut self, stmt: &ast::Stmt) {
+        match stmt {
+            ast::Stmt::Assign(assignment) => {
+                self.in_target_creating_definition = true;
+                for target in &assignment.targets {
+                    self.visit_expr(target);
+                }
+                self.in_target_creating_definition = false;
+
+                self.visit_expr(&assignment.value);
+            }
+            ast::Stmt::AnnAssign(assignment) => {
+                self.in_target_creating_definition = true;
+                self.visit_expr(&assignment.target);
+                self.in_target_creating_definition = false;
+
+                self.visit_expr(&assignment.annotation);
+                if let Some(value) = &assignment.value {
+                    self.visit_expr(value);
+                }
+            }
+            ast::Stmt::For(for_stmt) => {
+                self.in_target_creating_definition = true;
+                self.visit_expr(&for_stmt.target);
+                self.in_target_creating_definition = false;
+
+                self.visit_expr(&for_stmt.iter);
+                self.visit_body(&for_stmt.body);
+                self.visit_body(&for_stmt.orelse);
+            }
+            ast::Stmt::With(with_stmt) => {
+                for item in &with_stmt.items {
+                    self.visit_expr(&item.context_expr);
+                    if let Some(expr) = &item.optional_vars {
+                        self.in_target_creating_definition = true;
+                        self.visit_expr(expr);
+                        self.in_target_creating_definition = false;
+                    }
+                }
+
+                self.visit_body(&with_stmt.body);
+            }
+            ast::Stmt::Try(try_stmt) => {
+                self.visit_body(&try_stmt.body);
+                for handler in &try_stmt.handlers {
+                    match handler {
+                        ast::ExceptHandler::ExceptHandler(except_handler) => {
+                            if let Some(expr) = &except_handler.type_ {
+                                self.visit_expr(expr);
+                            }
+                            if let Some(name) = &except_handler.name
+                                && let Some(true) = is_symbol_unnecessary_in_scope(
+                                    self.model,
+                                    ast::AnyNodeRef::from(except_handler),
+                                    name.id.as_str(),
+                                )
+                            {
+                                self.add_unused_binding(name.range());
+                            }
+                            self.visit_body(&except_handler.body);
+                        }
+                    }
+                }
+                self.visit_body(&try_stmt.orelse);
+                self.visit_body(&try_stmt.finalbody);
+            }
+            _ => walk_stmt(self, stmt),
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &ast::Expr) {
+        match expr {
+            ast::Expr::Name(name) => {
+                if self.in_target_creating_definition
+                    && name.ctx.is_store()
+                    && let Some(true) = is_name_symbol_unnecessary(self.model, name)
+                {
+                    self.add_unused_binding(name.range());
+                }
+                walk_expr(self, expr);
+            }
+            ast::Expr::Named(named) => {
+                self.in_target_creating_definition = true;
+                self.visit_expr(&named.target);
+                self.in_target_creating_definition = false;
+
+                self.visit_expr(&named.value);
+            }
+            _ => walk_expr(self, expr),
+        }
+    }
+
+    fn visit_pattern(&mut self, pattern: &ast::Pattern) {
+        let add_pattern_binding = |this: &mut Self, name: &ast::Identifier| {
+            if let Some(true) = is_symbol_unnecessary_in_scope(
+                this.model,
+                ast::AnyNodeRef::from(name),
+                name.id.as_str(),
+            ) {
+                this.add_unused_binding(name.range());
+            }
+        };
+
+        match pattern {
+            ast::Pattern::MatchAs(pattern_as) => {
+                if let Some(nested_pattern) = &pattern_as.pattern {
+                    self.visit_pattern(nested_pattern);
+                }
+                if let Some(name) = &pattern_as.name {
+                    add_pattern_binding(self, name);
+                }
+            }
+            ast::Pattern::MatchMapping(pattern_mapping) => {
+                for (key, nested_pattern) in
+                    pattern_mapping.keys.iter().zip(&pattern_mapping.patterns)
+                {
+                    self.visit_expr(key);
+                    self.visit_pattern(nested_pattern);
+                }
+                if let Some(rest_name) = &pattern_mapping.rest {
+                    add_pattern_binding(self, rest_name);
+                }
+            }
+            ast::Pattern::MatchStar(pattern_star) => {
+                if let Some(rest_name) = &pattern_star.name {
+                    add_pattern_binding(self, rest_name);
+                }
+            }
+            _ => walk_pattern(self, pattern),
+        }
+    }
+
+    fn visit_comprehension(&mut self, comprehension: &ast::Comprehension) {
+        self.in_target_creating_definition = true;
+        self.visit_expr(&comprehension.target);
+        self.in_target_creating_definition = false;
+
+        self.visit_expr(&comprehension.iter);
+        for if_clause in &comprehension.ifs {
+            self.visit_expr(if_clause);
+        }
+    }
 }
 
 /// Get the primary definition kind for a name expression within a specific file.
