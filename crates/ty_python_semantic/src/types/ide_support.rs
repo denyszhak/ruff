@@ -15,246 +15,12 @@ use crate::{Db, DisplaySettings, HasType, SemanticModel};
 use itertools::Either;
 use ruff_db::files::FileRange;
 use ruff_db::parsed::parsed_module;
-use ruff_python_ast::visitor::source_order::{
-    SourceOrderVisitor, walk_expr, walk_pattern, walk_stmt,
-};
 use ruff_python_ast::{self as ast, AnyNodeRef};
 use ruff_text_size::{Ranged, TextRange};
 use rustc_hash::FxHashSet;
 
-use crate::semantic_index::scope::ScopeKind;
 pub use resolve_definition::{ImportAliasResolution, ResolvedDefinition, map_stub_definition};
 use resolve_definition::{find_symbol_in_scope, resolve_definition};
-
-fn is_dunder_name(name: &str) -> bool {
-    name.len() > 4 && name.starts_with("__") && name.ends_with("__")
-}
-
-fn should_mark_unnecessary(scope_kind: ScopeKind, name: &str) -> bool {
-    if name == "_" || is_dunder_name(name) {
-        return false;
-    }
-
-    match scope_kind {
-        ScopeKind::Function | ScopeKind::Lambda | ScopeKind::Comprehension => true,
-        ScopeKind::Module | ScopeKind::Class | ScopeKind::TypeParams | ScopeKind::TypeAlias => {
-            false
-        }
-    }
-}
-
-/// Check whether a symbol is unused within its containing scope and should be marked as unnecessary.
-/// Returns `Some(true)` if unused and should be marked, `Some(false)` otherwise, or `None` if the symbol cannot be found.
-pub fn is_symbol_unnecessary_in_scope(
-    model: &SemanticModel<'_>,
-    scope_node: ast::AnyNodeRef<'_>,
-    name: &str,
-) -> Option<bool> {
-    let file = model.file();
-    let file_scope = model.scope(scope_node)?;
-    let index = crate::semantic_index::semantic_index(model.db(), file);
-    let scope = index.scope(file_scope);
-    if !should_mark_unnecessary(scope.kind(), name) {
-        return Some(false);
-    }
-    let place_table = index.place_table(file_scope);
-    let symbol_id = place_table.symbol_id(name)?;
-    let symbol = place_table.symbol(symbol_id);
-    Some(!symbol.is_used())
-}
-
-/// Check whether a name expression refers to a symbol that is unused and should be marked as unnecessary.
-/// Returns `Some(true)` if unused and should be marked, `Some(false)` otherwise, or `None` if the symbol cannot be found.
-pub fn is_name_symbol_unnecessary(model: &SemanticModel<'_>, name: &ast::ExprName) -> Option<bool> {
-    is_symbol_unnecessary_in_scope(model, ast::AnyNodeRef::from(name), name.id.as_str())
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct UnusedBinding {
-    pub range: TextRange,
-}
-
-#[salsa::tracked(returns(ref))]
-pub fn unused_bindings(db: &dyn Db, file: ruff_db::files::File) -> Vec<UnusedBinding> {
-    let parsed = parsed_module(db, file).load(db);
-    let model = SemanticModel::new(db, file);
-
-    let mut collector = UnusedBindingCollector::new(&model);
-    collector.visit_body(parsed.suite());
-    collector
-        .unused_bindings
-        .sort_unstable_by_key(|binding| binding.range.start());
-    collector
-        .unused_bindings
-        .dedup_by_key(|binding| (binding.range.start(), binding.range.end()));
-
-    collector.unused_bindings
-}
-
-struct UnusedBindingCollector<'db> {
-    model: &'db SemanticModel<'db>,
-    unused_bindings: Vec<UnusedBinding>,
-    in_target_creating_definition: bool,
-}
-
-impl<'db> UnusedBindingCollector<'db> {
-    fn new(model: &'db SemanticModel<'db>) -> Self {
-        Self {
-            model,
-            unused_bindings: Vec::new(),
-            in_target_creating_definition: false,
-        }
-    }
-
-    fn add_unused_binding(&mut self, range: TextRange) {
-        self.unused_bindings.push(UnusedBinding { range });
-    }
-}
-
-impl SourceOrderVisitor<'_> for UnusedBindingCollector<'_> {
-    fn visit_stmt(&mut self, stmt: &ast::Stmt) {
-        match stmt {
-            ast::Stmt::Assign(assignment) => {
-                self.in_target_creating_definition = true;
-                for target in &assignment.targets {
-                    self.visit_expr(target);
-                }
-                self.in_target_creating_definition = false;
-
-                self.visit_expr(&assignment.value);
-            }
-            ast::Stmt::AnnAssign(assignment) => {
-                self.in_target_creating_definition = true;
-                self.visit_expr(&assignment.target);
-                self.in_target_creating_definition = false;
-
-                self.visit_expr(&assignment.annotation);
-                if let Some(value) = &assignment.value {
-                    self.visit_expr(value);
-                }
-            }
-            ast::Stmt::For(for_stmt) => {
-                self.in_target_creating_definition = true;
-                self.visit_expr(&for_stmt.target);
-                self.in_target_creating_definition = false;
-
-                self.visit_expr(&for_stmt.iter);
-                self.visit_body(&for_stmt.body);
-                self.visit_body(&for_stmt.orelse);
-            }
-            ast::Stmt::With(with_stmt) => {
-                for item in &with_stmt.items {
-                    self.visit_expr(&item.context_expr);
-                    if let Some(expr) = &item.optional_vars {
-                        self.in_target_creating_definition = true;
-                        self.visit_expr(expr);
-                        self.in_target_creating_definition = false;
-                    }
-                }
-
-                self.visit_body(&with_stmt.body);
-            }
-            ast::Stmt::Try(try_stmt) => {
-                self.visit_body(&try_stmt.body);
-                for handler in &try_stmt.handlers {
-                    match handler {
-                        ast::ExceptHandler::ExceptHandler(except_handler) => {
-                            if let Some(expr) = &except_handler.type_ {
-                                self.visit_expr(expr);
-                            }
-                            if let Some(name) = &except_handler.name
-                                && let Some(true) = is_symbol_unnecessary_in_scope(
-                                    self.model,
-                                    ast::AnyNodeRef::from(except_handler),
-                                    name.id.as_str(),
-                                )
-                            {
-                                self.add_unused_binding(name.range());
-                            }
-                            self.visit_body(&except_handler.body);
-                        }
-                    }
-                }
-                self.visit_body(&try_stmt.orelse);
-                self.visit_body(&try_stmt.finalbody);
-            }
-            _ => walk_stmt(self, stmt),
-        }
-    }
-
-    fn visit_expr(&mut self, expr: &ast::Expr) {
-        match expr {
-            ast::Expr::Name(name) => {
-                if self.in_target_creating_definition
-                    && name.ctx.is_store()
-                    && let Some(true) = is_name_symbol_unnecessary(self.model, name)
-                {
-                    self.add_unused_binding(name.range());
-                }
-                walk_expr(self, expr);
-            }
-            ast::Expr::Named(named) => {
-                self.in_target_creating_definition = true;
-                self.visit_expr(&named.target);
-                self.in_target_creating_definition = false;
-
-                self.visit_expr(&named.value);
-            }
-            _ => walk_expr(self, expr),
-        }
-    }
-
-    fn visit_pattern(&mut self, pattern: &ast::Pattern) {
-        let add_pattern_binding = |this: &mut Self, name: &ast::Identifier| {
-            if let Some(true) = is_symbol_unnecessary_in_scope(
-                this.model,
-                ast::AnyNodeRef::from(name),
-                name.id.as_str(),
-            ) {
-                this.add_unused_binding(name.range());
-            }
-        };
-
-        match pattern {
-            ast::Pattern::MatchAs(pattern_as) => {
-                if let Some(nested_pattern) = &pattern_as.pattern {
-                    self.visit_pattern(nested_pattern);
-                }
-                if let Some(name) = &pattern_as.name {
-                    add_pattern_binding(self, name);
-                }
-            }
-            ast::Pattern::MatchMapping(pattern_mapping) => {
-                for (key, nested_pattern) in
-                    pattern_mapping.keys.iter().zip(&pattern_mapping.patterns)
-                {
-                    self.visit_expr(key);
-                    self.visit_pattern(nested_pattern);
-                }
-                if let Some(rest_name) = &pattern_mapping.rest {
-                    add_pattern_binding(self, rest_name);
-                }
-            }
-            ast::Pattern::MatchStar(pattern_star) => {
-                if let Some(rest_name) = &pattern_star.name {
-                    add_pattern_binding(self, rest_name);
-                }
-            }
-            _ => walk_pattern(self, pattern),
-        }
-    }
-
-    fn visit_comprehension(&mut self, comprehension: &ast::Comprehension) {
-        self.in_target_creating_definition = true;
-        self.visit_expr(&comprehension.target);
-        self.in_target_creating_definition = false;
-
-        self.visit_expr(&comprehension.iter);
-        for if_clause in &comprehension.ifs {
-            self.visit_expr(if_clause);
-        }
-    }
-}
 
 /// Get the primary definition kind for a name expression within a specific file.
 /// Returns the first definition kind that is reachable for this name in its scope.
@@ -1661,5 +1427,101 @@ mod resolve_definition {
         };
 
         Ok(component)
+    }
+}
+
+#[cfg(test)]
+mod bench_tests {
+    use super::unused_bindings;
+    use crate::db::tests::TestDbBuilder;
+    use ruff_db::files::system_path_to_file;
+    use ruff_db::system::DbWithWritableSystem as _;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    fn build_fixture(functions: usize) -> String {
+        let mut source = String::new();
+        source.push_str("GLOBAL_USED = 1\nprint(GLOBAL_USED)\n\n");
+
+        for i in 0..functions {
+            source.push_str(&format!("def fn_{i}(payload):\n"));
+            source.push_str(&format!("    used_{i} = payload\n"));
+            source.push_str(&format!("    dead_{i} = {i}\n"));
+            source.push_str("    _ = 0\n");
+            source.push_str(&format!("    for loop_dead_{i} in range(5):\n"));
+            source.push_str("        pass\n");
+            source.push_str(&format!("    for loop_used_{i} in range(5):\n"));
+            source.push_str(&format!("        print(loop_used_{i})\n"));
+            source.push_str(&format!("    [1 for comp_dead_{i} in range(3)]\n"));
+            source.push_str(&format!(
+                "    [comp_ok_{i} for comp_ok_{i}, comp_other_{i} in [(1, 2), (3, 4)]]\n"
+            ));
+            source.push_str("    try:\n");
+            source.push_str("        1 / 0\n");
+            source.push_str(&format!("    except Exception as exc_dead_{i}:\n"));
+            source.push_str("        pass\n");
+            source.push_str(&format!("    except Exception as exc_ok_{i}:\n"));
+            source.push_str(&format!("        print(exc_ok_{i})\n"));
+            source.push_str("    match payload:\n");
+            source.push_str(&format!(
+                "        case {{'x': pat_dead_{i}, **pat_rest_{i}}}:\n"
+            ));
+            source.push_str("            return 1\n");
+            source.push_str(&format!(
+                "        case [pat_first_{i}, *pat_tail_{i}] as pat_seq_{i}:\n"
+            ));
+            source.push_str(&format!("            return pat_first_{i}\n\n"));
+        }
+
+        source.push_str("def run_all(value):\n");
+        for i in 0..functions {
+            source.push_str(&format!("    fn_{i}(value)\n"));
+        }
+        source.push_str("    return value\n\n");
+        source.push_str("run_all({'x': 1})\n");
+        source
+    }
+
+    #[test]
+    #[ignore = "manual microbenchmark"]
+    fn unused_bindings_microbench() -> anyhow::Result<()> {
+        let source = build_fixture(400);
+        let mut db = TestDbBuilder::new()
+            .with_file("/src/main.py", &source)
+            .build()?;
+        let file = system_path_to_file(&db, "/src/main.py").unwrap();
+
+        let start_cold = Instant::now();
+        let cold = unused_bindings(&db, file);
+        let cold_elapsed = start_cold.elapsed();
+        let cold_len = cold.len();
+
+        let iterations = 5_000usize;
+        let start_hot = Instant::now();
+        let mut sink = 0usize;
+        for _ in 0..iterations {
+            sink += black_box(unused_bindings(&db, file).len());
+        }
+        let hot_elapsed = start_hot.elapsed();
+
+        db.write_file("/src/main.py", format!("{source}\n# benchmark-edit\n"))?;
+        let edited = system_path_to_file(&db, "/src/main.py").unwrap();
+        let start_after_edit = Instant::now();
+        let after_edit = unused_bindings(&db, edited);
+        let after_edit_elapsed = start_after_edit.elapsed();
+
+        eprintln!(
+            "unused_bindings_microbench bindings={} cold_ms={:.3} hot_total_ms={:.3} hot_avg_us={:.3} after_edit_ms={:.3} sink={}",
+            cold_len,
+            cold_elapsed.as_secs_f64() * 1_000.0,
+            hot_elapsed.as_secs_f64() * 1_000.0,
+            hot_elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64,
+            after_edit_elapsed.as_secs_f64() * 1_000.0,
+            sink
+        );
+
+        assert!(cold_len > 0);
+        assert_eq!(cold_len, after_edit.len());
+        Ok(())
     }
 }
