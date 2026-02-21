@@ -14,9 +14,9 @@ use crate::semantic_index::{
 };
 use crate::semantic_index::{DeclarationWithConstraint, global_scope, use_def_map};
 use crate::types::{
-    ApplyTypeMappingVisitor, DynamicType, KnownClass, MaterializationKind, MemberLookupPolicy,
-    Truthiness, Type, TypeAndQualifiers, TypeQualifiers, UnionBuilder, UnionType, binding_type,
-    declaration_type,
+    ApplyTypeMappingVisitor, DynamicType, KnownClass, KnownInstanceType, MaterializationKind,
+    MemberLookupPolicy, Truthiness, Type, TypeAndQualifiers, TypeQualifiers, UnionBuilder,
+    UnionType, binding_type, declaration_type,
 };
 use crate::{Db, FxOrderSet, Program};
 
@@ -503,7 +503,7 @@ pub(crate) fn imported_symbol<'db>(
 /// and should not be used when a symbol is being explicitly imported from the `builtins` module
 /// (e.g. `from builtins import int`).
 pub(crate) fn builtins_symbol<'db>(db: &'db dyn Db, symbol: &str) -> PlaceAndQualifiers<'db> {
-    let resolver = |module: Module<'_>| {
+    let resolver = |module: Module<'_>, filter_internal_typevars: bool| {
         let file = module.file(db)?;
         let found_symbol = symbol_impl(
             db,
@@ -519,13 +519,28 @@ pub(crate) fn builtins_symbol<'db>(db: &'db dyn Db, symbol: &str) -> PlaceAndQua
             module_type_implicit_global_symbol(db, symbol)
         });
         // If this symbol is not present in project-level builtins, search in the default ones.
-        found_symbol
-            .ignore_possibly_undefined()
-            .map(|_| found_symbol)
+        found_symbol.ignore_possibly_undefined().and_then(|ty| {
+            // Typeshed's `builtins.pyi` contains underscore-prefixed helper `TypeVar`s
+            // (e.g., `_T`) that are implementation details and should not be treated as
+            // globally available names.
+            let is_internal_typevar = filter_internal_typevars
+                && symbol.starts_with('_')
+                && matches!(ty, Type::KnownInstance(KnownInstanceType::TypeVar(_)));
+
+            if is_internal_typevar {
+                None
+            } else {
+                Some(found_symbol)
+            }
+        })
     };
+
     resolve_module_confident(db, &ModuleName::new_static("__builtins__").unwrap())
-        .and_then(&resolver)
-        .or_else(|| resolve_module_confident(db, &KnownModule::Builtins.name()).and_then(resolver))
+        .and_then(|module| resolver(module, false))
+        .or_else(|| {
+            resolve_module_confident(db, &KnownModule::Builtins.name())
+                .and_then(|module| resolver(module, true))
+        })
         .unwrap_or_default()
 }
 

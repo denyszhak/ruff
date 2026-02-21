@@ -45,3 +45,14 @@ python-version = "3.8"
 foo: List[int]  # error: [unresolved-reference]
 bar: Type  # error: [unresolved-reference]
 ```
+
+## Internal builtins typevars are unresolved
+
+Typeshed's `builtins.pyi` can define helper `TypeVar` names (such as `_T`) for stub internals.
+Those names are not user-facing builtins and should be unresolved in normal user code.
+
+```py
+x: _T  # error: [unresolved-reference]
+y: _T_co  # error: [unresolved-reference]
+z: _VT  # error: [unresolved-reference]
+```

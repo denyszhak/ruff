@@ -118,6 +118,27 @@ reveal_type(foo)  # revealed: int
 reveal_type(bar)  # revealed: str
 ```
 
+## Underscore `TypeVar` from custom builtins
+
+Underscore-prefixed helper `TypeVar`s from vendored `builtins.pyi` should not leak into the global
+builtins namespace, but project-level `__builtins__.pyi` can intentionally define one.
+
+```py
+def identity(value: _T) -> _T:
+    return value
+
+identity(1)
+identity("x")
+```
+
+`__builtins__.pyi`:
+
+```pyi
+from typing import TypeVar
+
+_T = TypeVar("_T")
+```
+
 ## Assigning custom builtins
 
 ```py
