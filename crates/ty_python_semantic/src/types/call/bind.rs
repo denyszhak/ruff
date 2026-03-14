@@ -56,7 +56,7 @@ use crate::types::{
     TypeContext, TypeVarBoundOrConstraints, TypeVarVariance, UnionBuilder, UnionType,
     WrapperDescriptorKind, enums, list_members,
 };
-use crate::{DisplaySettings, FxOrderMap, Program};
+use crate::{DisplaySettings, Program};
 use ruff_db::diagnostic::{Annotation, Diagnostic, SubDiagnostic, SubDiagnosticSeverity};
 use ruff_python_ast::{self as ast, ArgOrKeyword, PythonVersion};
 use ty_module_resolver::KnownModule;
@@ -74,23 +74,21 @@ enum CallErrorPriority {
 }
 
 /// A single element in a union of callables.
-/// This could be a single callable or an intersection of callables.
 /// If there are multiple bindings, they form an intersection.
 #[derive(Debug, Clone)]
-struct BindingsElement<'db> {
+struct BindingGroup<'db> {
     /// The callable bindings for this element.
     /// If there are multiple bindings, they form an intersection.
     bindings: SmallVec<[CallableBinding<'db>; 1]>,
 }
 
-impl<'db> BindingsElement<'db> {
-    /// Returns the constructor instance type shared by all bindings in this element, if any.
-    fn constructor_instance_type(&self) -> Option<Type<'db>> {
-        let constructor_instance_type = self.bindings.first()?.constructor_instance_type?;
-        self.bindings
-            .iter()
-            .all(|binding| binding.constructor_instance_type == Some(constructor_instance_type))
-            .then_some(constructor_instance_type)
+impl<'db> BindingGroup<'db> {
+    fn iter_bindings(&self) -> std::slice::Iter<'_, CallableBinding<'db>> {
+        self.bindings.iter()
+    }
+
+    fn iter_bindings_mut(&mut self) -> std::slice::IterMut<'_, CallableBinding<'db>> {
+        self.bindings.iter_mut()
     }
 
     /// Returns true if this element is an intersection of multiple callables.
@@ -169,6 +167,187 @@ impl<'db> BindingsElement<'db> {
     fn is_callable(&self) -> bool {
         self.bindings.iter().any(CallableBinding::is_callable)
     }
+
+    fn single_binding(&self) -> Option<&CallableBinding<'db>> {
+        match &*self.bindings {
+            [binding] => Some(binding),
+            _ => None,
+        }
+    }
+
+    fn return_type(&self, db: &'db dyn Db) -> Type<'db> {
+        if let [single_binding] = &*self.bindings {
+            single_binding.return_type()
+        } else {
+            IntersectionType::from_elements(
+                db,
+                self.bindings.iter().map(CallableBinding::return_type),
+            )
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ConstructorElement<'db> {
+    callable_type: Type<'db>,
+    constructor_instance_type: Type<'db>,
+    elements: SmallVec<[BindingGroup<'db>; 2]>,
+}
+
+impl<'db> ConstructorElement<'db> {
+    fn iter_bindings(&self) -> impl Iterator<Item = &CallableBinding<'db>> {
+        self.elements.iter().flat_map(BindingGroup::iter_bindings)
+    }
+
+    fn iter_bindings_mut(&mut self) -> impl Iterator<Item = &mut CallableBinding<'db>> {
+        self.elements
+            .iter_mut()
+            .flat_map(BindingGroup::iter_bindings_mut)
+    }
+
+    fn check_types(
+        &mut self,
+        db: &'db dyn Db,
+        constraints: &ConstraintSetBuilder<'db>,
+        argument_types: &CallArguments<'_, 'db>,
+        call_expression_tcx: TypeContext<'db>,
+    ) -> Option<ArgumentForms> {
+        let mut result = ArgumentForms::default();
+        let mut any_forms = false;
+        for element in &mut self.elements {
+            if let Some(forms) =
+                element.check_types(db, constraints, argument_types, call_expression_tcx)
+            {
+                result.merge(&forms);
+                any_forms = true;
+            }
+        }
+        any_forms.then_some(result)
+    }
+
+    fn as_result(&self) -> Result<(), CallErrorKind> {
+        let mut all_ok = true;
+        let mut any_binding_error = false;
+        let mut all_not_callable = true;
+
+        for element in &self.elements {
+            let result = element.as_result();
+            all_ok &= result.is_ok();
+            any_binding_error |= matches!(result, Err(CallErrorKind::BindingError));
+            all_not_callable &= matches!(result, Err(CallErrorKind::NotCallable));
+        }
+
+        if all_ok {
+            Ok(())
+        } else if any_binding_error {
+            Err(CallErrorKind::BindingError)
+        } else if all_not_callable {
+            Err(CallErrorKind::NotCallable)
+        } else {
+            Err(CallErrorKind::PossiblyNotCallable)
+        }
+    }
+
+    fn retain_successful(&mut self) {
+        for element in &mut self.elements {
+            element.retain_successful();
+        }
+    }
+
+    fn is_callable(&self) -> bool {
+        self.elements.iter().any(BindingGroup::is_callable)
+    }
+}
+
+/// A single element in a union of callables.
+#[derive(Debug, Clone)]
+enum BindingsElement<'db> {
+    Regular(BindingGroup<'db>),
+    Constructor(ConstructorElement<'db>),
+}
+
+impl<'db> BindingsElement<'db> {
+    fn regular(bindings: SmallVec<[CallableBinding<'db>; 1]>) -> Self {
+        Self::Regular(BindingGroup { bindings })
+    }
+
+    fn into_binding_groups(self) -> SmallVec<[BindingGroup<'db>; 2]> {
+        match self {
+            Self::Regular(group) => smallvec![group],
+            Self::Constructor(constructor) => constructor.elements,
+        }
+    }
+
+    fn iter_bindings(&self) -> Box<dyn Iterator<Item = &CallableBinding<'db>> + '_> {
+        match self {
+            Self::Regular(group) => Box::new(group.iter_bindings()),
+            Self::Constructor(constructor) => Box::new(constructor.iter_bindings()),
+        }
+    }
+
+    fn iter_bindings_mut(&mut self) -> Box<dyn Iterator<Item = &mut CallableBinding<'db>> + '_> {
+        match self {
+            Self::Regular(group) => Box::new(group.iter_bindings_mut()),
+            Self::Constructor(constructor) => Box::new(constructor.iter_bindings_mut()),
+        }
+    }
+
+    fn check_types(
+        &mut self,
+        db: &'db dyn Db,
+        constraints: &ConstraintSetBuilder<'db>,
+        argument_types: &CallArguments<'_, 'db>,
+        call_expression_tcx: TypeContext<'db>,
+    ) -> Option<ArgumentForms> {
+        match self {
+            Self::Regular(group) => {
+                group.check_types(db, constraints, argument_types, call_expression_tcx)
+            }
+            Self::Constructor(constructor) => {
+                constructor.check_types(db, constraints, argument_types, call_expression_tcx)
+            }
+        }
+    }
+
+    fn as_result(&self) -> Result<(), CallErrorKind> {
+        match self {
+            Self::Regular(group) => group.as_result(),
+            Self::Constructor(constructor) => constructor.as_result(),
+        }
+    }
+
+    fn retain_successful(&mut self) {
+        match self {
+            Self::Regular(group) => group.retain_successful(),
+            Self::Constructor(constructor) => constructor.retain_successful(),
+        }
+    }
+
+    fn is_callable(&self) -> bool {
+        match self {
+            Self::Regular(group) => group.is_callable(),
+            Self::Constructor(constructor) => constructor.is_callable(),
+        }
+    }
+
+    fn single_binding(&self) -> Option<&CallableBinding<'db>> {
+        match self {
+            Self::Regular(group) => group.single_binding(),
+            Self::Constructor(_) => None,
+        }
+    }
+
+    fn return_type(&self, db: &'db dyn Db) -> Type<'db> {
+        match self {
+            Self::Regular(group) => group.return_type(db),
+            Self::Constructor(constructor) => Bindings::combine_constructor_return_type(
+                db,
+                constructor.constructor_instance_type,
+                constructor.iter_bindings(),
+            )
+            .unwrap_or_else(Type::unknown),
+        }
+    }
 }
 
 /// Binding information for a union of callables, where each union element may be an intersection.
@@ -221,7 +400,20 @@ impl<'db> Bindings<'db> {
             implicit_dunder_new_is_possibly_unbound |= set.implicit_dunder_new_is_possibly_unbound;
             implicit_dunder_init_is_possibly_unbound |=
                 set.implicit_dunder_init_is_possibly_unbound;
-            elements_acc.extend(set.elements);
+            if let Some(constructor_instance_type) = set.constructor_instance_type {
+                let elements = set
+                    .elements
+                    .into_iter()
+                    .flat_map(BindingsElement::into_binding_groups)
+                    .collect();
+                elements_acc.push(BindingsElement::Constructor(ConstructorElement {
+                    callable_type: set.callable_type,
+                    constructor_instance_type,
+                    elements,
+                }));
+            } else {
+                elements_acc.extend(set.elements);
+            }
         }
 
         let elements = elements_acc;
@@ -253,15 +445,17 @@ impl<'db> Bindings<'db> {
             implicit_dunder_init_is_possibly_unbound &=
                 set.implicit_dunder_init_is_possibly_unbound;
             for element in set.elements {
-                for binding in element.bindings {
+                for binding in element
+                    .into_binding_groups()
+                    .into_iter()
+                    .flat_map(|group| group.bindings)
+                {
                     inner_bindings_acc.push(binding);
                 }
             }
         }
         assert!(!inner_bindings_acc.is_empty());
-        let elements = smallvec![BindingsElement {
-            bindings: inner_bindings_acc,
-        }];
+        let elements = smallvec![BindingsElement::regular(inner_bindings_acc)];
         Self {
             callable_type,
             implicit_dunder_new_is_possibly_unbound,
@@ -349,7 +543,9 @@ impl<'db> Bindings<'db> {
     /// all `CallableBinding`s from all elements, which can then be further flattened to
     /// individual `Binding`s via `CallableBinding`'s `IntoIterator` implementation.
     pub(crate) fn iter_flat(&self) -> impl Iterator<Item = &CallableBinding<'db>> {
-        self.elements.iter().flat_map(|e| e.bindings.iter())
+        self.elements
+            .iter()
+            .flat_map(BindingsElement::iter_bindings)
     }
 
     /// Returns a mutable iterator over all `CallableBinding`s, flattening the two-level structure.
@@ -357,7 +553,9 @@ impl<'db> Bindings<'db> {
     /// Note: This loses the union/intersection distinction. Use only when you need to
     /// modify all bindings regardless of their union/intersection grouping.
     pub(crate) fn iter_flat_mut(&mut self) -> impl Iterator<Item = &mut CallableBinding<'db>> {
-        self.elements.iter_mut().flat_map(|e| e.bindings.iter_mut())
+        self.elements
+            .iter_mut()
+            .flat_map(BindingsElement::iter_bindings_mut)
     }
 
     /// Maps each `CallableBinding` to a type and combines results while preserving
@@ -372,15 +570,39 @@ impl<'db> Bindings<'db> {
     ) -> Type<'db> {
         let mut element_types = Vec::with_capacity(self.elements.len());
         for element in &self.elements {
-            let mut binding_types = Vec::new();
-            for binding in &element.bindings {
-                if let Some(ty) = map(binding) {
-                    binding_types.push(ty);
-                }
-            }
+            match element {
+                BindingsElement::Regular(group) => {
+                    let mut binding_types = Vec::new();
+                    for binding in group.iter_bindings() {
+                        if let Some(ty) = map(binding) {
+                            binding_types.push(ty);
+                        }
+                    }
 
-            if !binding_types.is_empty() {
-                element_types.push(IntersectionType::from_elements(db, binding_types));
+                    if !binding_types.is_empty() {
+                        element_types.push(IntersectionType::from_elements(db, binding_types));
+                    }
+                }
+                BindingsElement::Constructor(constructor) => {
+                    let mut constructor_types = Vec::new();
+                    for group in &constructor.elements {
+                        let mut binding_types = Vec::new();
+                        for binding in group.iter_bindings() {
+                            if let Some(ty) = map(binding) {
+                                binding_types.push(ty);
+                            }
+                        }
+
+                        if !binding_types.is_empty() {
+                            constructor_types
+                                .push(IntersectionType::from_elements(db, binding_types));
+                        }
+                    }
+
+                    if !constructor_types.is_empty() {
+                        element_types.push(UnionType::from_elements(db, constructor_types));
+                    }
+                }
             }
         }
 
@@ -397,8 +619,23 @@ impl<'db> Bindings<'db> {
             elements: self
                 .elements
                 .into_iter()
-                .map(|elem| BindingsElement {
-                    bindings: elem.bindings.into_iter().map(&f).collect(),
+                .map(|elem| match elem {
+                    BindingsElement::Regular(group) => {
+                        BindingsElement::regular(group.bindings.into_iter().map(&f).collect())
+                    }
+                    BindingsElement::Constructor(constructor) => {
+                        BindingsElement::Constructor(ConstructorElement {
+                            callable_type: constructor.callable_type,
+                            constructor_instance_type: constructor.constructor_instance_type,
+                            elements: constructor
+                                .elements
+                                .into_iter()
+                                .map(|group| BindingGroup {
+                                    bindings: group.bindings.into_iter().map(&f).collect(),
+                                })
+                                .collect(),
+                        })
+                    }
                 })
                 .collect(),
         }
@@ -532,7 +769,7 @@ impl<'db> Bindings<'db> {
     /// Returns true if this is a single callable (not a union or intersection).
     pub(crate) fn is_single(&self) -> bool {
         match &*self.elements {
-            [single] => single.bindings.len() == 1,
+            [single] => single.single_binding().is_some(),
             _ => false,
         }
     }
@@ -540,7 +777,9 @@ impl<'db> Bindings<'db> {
     /// Returns the single `CallableBinding` if this is not a union or intersection.
     pub(crate) fn single_element(&self) -> Option<&CallableBinding<'db>> {
         if self.is_single() {
-            self.elements.first().and_then(|e| e.bindings.first())
+            self.elements
+                .first()
+                .and_then(BindingsElement::single_binding)
         } else {
             None
         }
@@ -610,46 +849,10 @@ impl<'db> Bindings<'db> {
             return binding.return_type();
         }
 
-        // For each element (union variant), compute its return type:
-        // - Single binding: use that binding's return type
-        // - Multiple bindings (intersection): for intersections, only include
-        //   successful bindings (failed ones have been filtered out by retain_successful)
-        // Nested unions of constructor types flatten each class's `__new__` / `__init__`
-        // bindings into separate outer elements. Re-group them by constructed instance type so
-        // each constructor can merge its inferred specializations before we union the results.
-        let mut constructor_groups: FxOrderMap<Type<'db>, SmallVec<[&CallableBinding<'db>; 1]>> =
-            FxOrderMap::default();
-        let mut element_return_types = Vec::with_capacity(self.elements.len());
-
-        for element in &self.elements {
-            if let Some(constructor_instance_type) = element.constructor_instance_type() {
-                constructor_groups
-                    .entry(constructor_instance_type)
-                    .or_default()
-                    .extend(element.bindings.iter());
-                continue;
-            }
-
-            let element_return_type = if let [single_binding] = &*element.bindings {
-                single_binding.return_type()
-            } else {
-                // For intersections, intersect the return types of remaining bindings
-                IntersectionType::from_elements(
-                    db,
-                    element.bindings.iter().map(CallableBinding::return_type),
-                )
-            };
-            element_return_types.push(element_return_type);
-        }
-
-        element_return_types.extend(constructor_groups.into_iter().filter_map(
-            |(constructor_instance_type, bindings)| {
-                Self::combine_constructor_return_type(db, constructor_instance_type, bindings)
-            },
-        ));
-
-        // Union the return types of all elements
-        UnionType::from_elements(db, element_return_types)
+        UnionType::from_elements(
+            db,
+            self.elements.iter().map(|element| element.return_type(db)),
+        )
     }
 
     /// Report diagnostics for all of the errors that occurred when trying to match actual
@@ -695,45 +898,35 @@ impl<'db> Bindings<'db> {
         }
     }
 
-    /// Report diagnostics for a single union element.
-    /// If the element is an intersection where all bindings failed, use priority hierarchy.
-    fn report_element_diagnostics(
+    fn report_binding_group_diagnostics(
         &self,
         context: &InferContext<'db, '_>,
         node: ast::AnyNodeRef,
-        element: &BindingsElement<'db>,
+        callable_type: Type<'db>,
+        is_union: bool,
+        element: &BindingGroup<'db>,
     ) {
-        // If this element succeeded, no diagnostics to report
         if element.as_result().is_ok() {
             return;
         }
 
-        let is_union = self.elements.len() > 1;
-
-        // For intersection elements, use priority hierarchy
         if element.is_intersection() {
-            // Find the highest priority error among bindings in this element
             let max_priority = element.error_priority();
-
-            // Construct the intersection type from the bindings
             let intersection_type = IntersectionType::from_elements(
                 context.db(),
-                element.bindings.iter().map(|b| b.callable_type),
+                element.iter_bindings().map(|b| b.callable_type),
             );
 
-            // Only report errors from bindings with the highest priority
-            for binding in &element.bindings {
+            for binding in element.iter_bindings() {
                 if binding.error_priority() == max_priority {
                     if is_union {
-                        // Use layered diagnostic for intersection inside a union
                         let layered_diag = LayeredDiagnostic {
-                            union_callable_type: self.callable_type(),
+                            union_callable_type: callable_type,
                             intersection_callable_type: intersection_type,
                             binding,
                         };
                         binding.report_diagnostics(context, node, Some(&layered_diag));
                     } else {
-                        // Just intersection, no union context needed
                         let intersection_diag = IntersectionDiagnostic {
                             callable_type: intersection_type,
                             binding,
@@ -742,17 +935,43 @@ impl<'db> Bindings<'db> {
                     }
                 }
             }
-        } else {
-            // Single binding in this element - report as a union variant
-            if let Some(binding) = element.bindings.first() {
-                if binding.as_result().is_ok() {
-                    return;
+            return;
+        }
+
+        if let Some(binding) = element.single_binding() {
+            let union_diag = UnionDiagnostic {
+                callable_type,
+                binding,
+            };
+            binding.report_diagnostics(context, node, Some(&union_diag));
+        }
+    }
+
+    /// Report diagnostics for a single union element.
+    fn report_element_diagnostics(
+        &self,
+        context: &InferContext<'db, '_>,
+        node: ast::AnyNodeRef,
+        element: &BindingsElement<'db>,
+    ) {
+        match element {
+            BindingsElement::Regular(group) => self.report_binding_group_diagnostics(
+                context,
+                node,
+                self.callable_type(),
+                self.elements.len() > 1,
+                group,
+            ),
+            BindingsElement::Constructor(constructor) => {
+                for group in &constructor.elements {
+                    self.report_binding_group_diagnostics(
+                        context,
+                        node,
+                        constructor.callable_type,
+                        constructor.elements.len() > 1,
+                        group,
+                    );
                 }
-                let union_diag = UnionDiagnostic {
-                    callable_type: self.callable_type(),
-                    binding,
-                };
-                binding.report_diagnostics(context, node, Some(&union_diag));
             }
         }
     }
@@ -2008,9 +2227,7 @@ impl<'db> From<CallableBinding<'db>> for Bindings<'db> {
     fn from(from: CallableBinding<'db>) -> Bindings<'db> {
         Bindings {
             callable_type: from.callable_type,
-            elements: smallvec_inline![BindingsElement {
-                bindings: smallvec_inline![from],
-            }],
+            elements: smallvec_inline![BindingsElement::regular(smallvec_inline![from])],
             argument_forms: ArgumentForms::new(0),
             constructor_instance_type: None,
             implicit_dunder_new_is_possibly_unbound: false,
@@ -2035,9 +2252,9 @@ impl<'db> From<Binding<'db>> for Bindings<'db> {
         };
         Bindings {
             callable_type,
-            elements: smallvec_inline![BindingsElement {
-                bindings: smallvec_inline![callable_binding],
-            }],
+            elements: smallvec_inline![BindingsElement::regular(smallvec_inline![
+                callable_binding
+            ])],
             argument_forms: ArgumentForms::new(0),
             constructor_instance_type: None,
             implicit_dunder_new_is_possibly_unbound: false,
