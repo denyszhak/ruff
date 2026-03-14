@@ -81,16 +81,38 @@ struct BindingsElement<'db> {
     /// The callable bindings for this element.
     /// If there are multiple bindings, they form an intersection.
     bindings: SmallVec<[CallableBinding<'db>; 1]>,
+
+    /// The constructor family this element belongs to, if it is part of a constructor call.
+    constructor_group: Option<Type<'db>>,
 }
 
 impl<'db> BindingsElement<'db> {
+    fn new(bindings: SmallVec<[CallableBinding<'db>; 1]>) -> Self {
+        let constructor_group = Self::shared_constructor_instance_type(&bindings);
+        Self {
+            bindings,
+            constructor_group,
+        }
+    }
+
     /// Returns the constructor instance type shared by all bindings in this element, if any.
     fn constructor_instance_type(&self) -> Option<Type<'db>> {
-        let constructor_instance_type = self.bindings.first()?.constructor_instance_type?;
-        self.bindings
+        self.constructor_group
+    }
+
+    fn shared_constructor_instance_type(bindings: &[CallableBinding<'db>]) -> Option<Type<'db>> {
+        let constructor_instance_type = bindings.first()?.constructor_instance_type?;
+        bindings
             .iter()
             .all(|binding| binding.constructor_instance_type == Some(constructor_instance_type))
             .then_some(constructor_instance_type)
+    }
+
+    fn set_constructor_group(&mut self, constructor_instance_type: Type<'db>) {
+        self.constructor_group = Some(constructor_instance_type);
+        for binding in &mut self.bindings {
+            binding.set_constructor_instance_type(constructor_instance_type);
+        }
     }
 
     /// Returns true if this element is an intersection of multiple callables.
@@ -153,6 +175,9 @@ impl<'db> BindingsElement<'db> {
                 binding.as_result().is_ok()
                     || binding.error_priority() == CallErrorPriority::TopCallable
             });
+            if self.constructor_group.is_none() {
+                self.constructor_group = Self::shared_constructor_instance_type(&self.bindings);
+            }
         }
     }
 
@@ -259,9 +284,7 @@ impl<'db> Bindings<'db> {
             }
         }
         assert!(!inner_bindings_acc.is_empty());
-        let elements = smallvec![BindingsElement {
-            bindings: inner_bindings_acc,
-        }];
+        let elements = smallvec![BindingsElement::new(inner_bindings_acc)];
         Self {
             callable_type,
             implicit_dunder_new_is_possibly_unbound,
@@ -287,11 +310,8 @@ impl<'db> Bindings<'db> {
     ) -> Self {
         self.constructor_instance_type = Some(constructor_instance_type);
 
-        for binding in self.iter_flat_mut() {
-            binding.constructor_instance_type = Some(constructor_instance_type);
-            for overload in &mut binding.overloads {
-                overload.constructor_instance_type = Some(constructor_instance_type);
-            }
+        for element in &mut self.elements {
+            element.set_constructor_group(constructor_instance_type);
         }
 
         self
@@ -397,9 +417,7 @@ impl<'db> Bindings<'db> {
             elements: self
                 .elements
                 .into_iter()
-                .map(|elem| BindingsElement {
-                    bindings: elem.bindings.into_iter().map(&f).collect(),
-                })
+                .map(|elem| BindingsElement::new(elem.bindings.into_iter().map(&f).collect()))
                 .collect(),
         }
     }
@@ -614,8 +632,7 @@ impl<'db> Bindings<'db> {
         // - Single binding: use that binding's return type
         // - Multiple bindings (intersection): for intersections, only include
         //   successful bindings (failed ones have been filtered out by retain_successful)
-        // Nested unions of constructor types flatten each class's `__new__` / `__init__`
-        // bindings into separate outer elements. Re-group them by constructed instance type so
+        // Nested unions of constructor types preserve per-element constructor-group metadata so
         // each constructor can merge its inferred specializations before we union the results.
         let mut constructor_groups: FxOrderMap<Type<'db>, SmallVec<[&CallableBinding<'db>; 1]>> =
             FxOrderMap::default();
@@ -2008,9 +2025,7 @@ impl<'db> From<CallableBinding<'db>> for Bindings<'db> {
     fn from(from: CallableBinding<'db>) -> Bindings<'db> {
         Bindings {
             callable_type: from.callable_type,
-            elements: smallvec_inline![BindingsElement {
-                bindings: smallvec_inline![from],
-            }],
+            elements: smallvec_inline![BindingsElement::new(smallvec_inline![from])],
             argument_forms: ArgumentForms::new(0),
             constructor_instance_type: None,
             implicit_dunder_new_is_possibly_unbound: false,
@@ -2035,9 +2050,7 @@ impl<'db> From<Binding<'db>> for Bindings<'db> {
         };
         Bindings {
             callable_type,
-            elements: smallvec_inline![BindingsElement {
-                bindings: smallvec_inline![callable_binding],
-            }],
+            elements: smallvec_inline![BindingsElement::new(smallvec_inline![callable_binding])],
             argument_forms: ArgumentForms::new(0),
             constructor_instance_type: None,
             implicit_dunder_new_is_possibly_unbound: false,
@@ -2141,6 +2154,13 @@ impl<'db> CallableBinding<'db> {
             overload_call_return_type: None,
             matching_overload_before_type_checking: None,
             overloads: smallvec![],
+        }
+    }
+
+    fn set_constructor_instance_type(&mut self, constructor_instance_type: Type<'db>) {
+        self.constructor_instance_type = Some(constructor_instance_type);
+        for overload in &mut self.overloads {
+            overload.constructor_instance_type = Some(constructor_instance_type);
         }
     }
 
